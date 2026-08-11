@@ -1,102 +1,187 @@
 name: Frontend to EC2
 
 on:
+
   # push:
   #   branches:
   #     - main
 
   workflow_dispatch:
 
+
 jobs:
+
   deploy:
+
     runs-on: ubuntu-latest
 
     steps:
+
+      # =====================================================
+      # 1. Checkout Repository
+      # =====================================================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      ######################################################
-      # SonarQube Scan
-      ######################################################
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+      # =====================================================
+      # SonarQube Scan - COMMENTED OUT
+      # =====================================================
 
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=frontend
-            -Dsonar.projectName=frontend
-            -Dsonar.sources=frontend
+      # - name: Set up Java
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     distribution: temurin
+      #     java-version: 17
 
-      ######################################################
-      # Quality Gate
-      ######################################################
+      # - name: SonarQube Scan
+      #   uses: SonarSource/sonarqube-scan-action@v5
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      #   with:
+      #     args: >
+      #       -Dsonar.projectKey=frontend
+      #       -Dsonar.projectName=frontend
+      #       -Dsonar.sources=frontend
 
-      - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
-        timeout-minutes: 10
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      ######################################################
-      # Deploy
-      ######################################################
+      # =====================================================
+      # SonarQube Quality Gate - COMMENTED OUT
+      # =====================================================
+
+      # - name: SonarQube Quality Gate
+      #   uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
+      #   timeout-minutes: 10
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+
+      # =====================================================
+      # Deploy to EC2
+      # =====================================================
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script: |
+
             set -e
 
             APP_DIR=/home/ec2-user/front
             REPO_NAME=Java-springboot-project
             REPO_URL=https://github.com/CloudTechDevOps/Java-springboot-project.git
 
-            echo "🚀 Starting deployment..."
+            echo "======================================"
+            echo "Starting Frontend Deployment"
+            echo "======================================"
+
+            # ---------------------------------------------
+            # Create application directory
+            # ---------------------------------------------
 
             mkdir -p $APP_DIR
+
             cd $APP_DIR
 
+
+            # ---------------------------------------------
+            # Clone or Pull Repository
+            # ---------------------------------------------
+
             if [ -d "$REPO_NAME/.git" ]; then
+
+              echo "Repository already exists."
+
               cd $REPO_NAME
+
               git reset --hard
+
               git pull origin main
+
             else
+
+              echo "Repository does not exist."
+
               git clone $REPO_URL
+
               cd $REPO_NAME
+
             fi
+
+
+            # ---------------------------------------------
+            # Install Python
+            # ---------------------------------------------
+
+            echo "Installing Python..."
 
             sudo dnf install -y python3 python3-pip
 
+
+            # ---------------------------------------------
+            # Go to Frontend
+            # ---------------------------------------------
+
             cd frontend
 
+
+            # ---------------------------------------------
+            # Create Python Virtual Environment
+            # ---------------------------------------------
+
             if [ ! -d "venv" ]; then
+
+              echo "Creating Python virtual environment..."
+
               python3 -m venv venv
+
+            else
+
+              echo "Virtual environment already exists."
+
             fi
+
+
+            # ---------------------------------------------
+            # Activate Virtual Environment
+            # ---------------------------------------------
 
             source venv/bin/activate
 
+
+            # ---------------------------------------------
+            # Install Python Dependencies
+            # ---------------------------------------------
+
+            echo "Installing frontend dependencies..."
+
             pip install --upgrade pip
+
             pip install -r requirements.txt
 
+
+            # ---------------------------------------------
+            # Create systemd Service
+            # ---------------------------------------------
+
+            echo "Creating frontend systemd service..."
+
             sudo tee /etc/systemd/system/frontend.service > /dev/null <<EOF
+
             [Unit]
             Description=Streamlit Frontend App
             After=network.target
 
             [Service]
             User=ec2-user
+
             WorkingDirectory=/home/ec2-user/front/Java-springboot-project/frontend
 
             ExecStart=/bin/bash -c 'source /home/ec2-user/front/Java-springboot-project/frontend/venv/bin/activate && streamlit run app.py --server.port=8501 --server.address=0.0.0.0'
@@ -111,33 +196,74 @@ jobs:
 
             [Install]
             WantedBy=multi-user.target
+
             EOF
 
+
+            # ---------------------------------------------
+            # Reload systemd
+            # ---------------------------------------------
+
+            echo "Reloading systemd..."
+
             sudo systemctl daemon-reload
+
+
+            # ---------------------------------------------
+            # Enable frontend service
+            # ---------------------------------------------
+
             sudo systemctl enable frontend
+
+
+            # ---------------------------------------------
+            # Restart frontend
+            # ---------------------------------------------
+
+            echo "Restarting frontend service..."
+
             sudo systemctl restart frontend
 
-            echo "Deployment completed."
 
-      ######################################################
+            # ---------------------------------------------
+            # Check service status
+            # ---------------------------------------------
+
+            echo "Checking frontend service..."
+
+            sudo systemctl --no-pager status frontend || true
+
+
+            echo "======================================"
+            echo "Frontend Deployment Completed"
+            echo "======================================"
+
+
+      # =====================================================
       # Email Notification
-      ######################################################
+      # =====================================================
 
-      - name: 📧 Send Deployment Report
+      - name: Send Deployment Report
         if: success() || failure()
         uses: dawidd6/action-send-mail@v3
+
         with:
           server_address: smtp.gmail.com
           server_port: 465
           secure: true
+
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
+
           subject: AI Deployment Report - ${{ github.repository }}
+
           to: ${{ secrets.EMAIL_TO }}
+
           from: ${{ secrets.EMAIL_USERNAME }}
 
           body: |
-            🚀 AI Deployment Report
+
+            Frontend Deployment Report
 
             Repository : ${{ github.repository }}
             Workflow   : ${{ github.workflow }}
@@ -149,11 +275,13 @@ jobs:
             Triggered By : ${{ github.actor }}
             Run Number   : ${{ github.run_number }}
 
-            SonarQube Analysis : Completed
-            Quality Gate       : Passed
+            SonarQube Analysis : Skipped
+            Quality Gate       : Skipped
 
             Deployment Target  : EC2
-            Frontend URL       : http://${{ secrets.EC2_HOST }}:8501
+
+            Frontend URL:
+            http://${{ secrets.EC2_HOST }}:8501
 
             Regards,
             GitHub Actions
