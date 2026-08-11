@@ -2,20 +2,34 @@ name: Backend to EC2
 
 on:
 
-# push:
-#   branches:
-#     - main
+  # Automatic deployment on push is currently disabled
+  # push:
+  #   branches:
+  #     - main
 
+  # Manual workflow execution
   workflow_dispatch:
 
+
 jobs:
+
   build-deploy:
+
     runs-on: ubuntu-latest
 
     steps:
 
+      # =====================================================
+      # 1. Checkout Repository
+      # =====================================================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+
+      # =====================================================
+      # 2. Set up Java 17
+      # =====================================================
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -24,10 +38,11 @@ jobs:
           java-version: 17
           cache: maven
 
-      # ---------------------------------------------------
-      # SonarQube Scan - COMMENTED OUT
-      # ---------------------------------------------------
-      #
+
+      # =====================================================
+      # 3. SonarQube Scan - COMMENTED OUT
+      # =====================================================
+
       # - name: Build and SonarQube Scan
       #   working-directory: backend
       #   env:
@@ -41,10 +56,11 @@ jobs:
       #       -Dsonar.host.url=$SONAR_HOST_URL \
       #       -Dsonar.token=$SONAR_TOKEN
 
-      # ---------------------------------------------------
-      # SonarQube Quality Gate - COMMENTED OUT
-      # ---------------------------------------------------
-      #
+
+      # =====================================================
+      # 4. SonarQube Quality Gate - COMMENTED OUT
+      # =====================================================
+
       # - name: SonarQube Quality Gate
       #   uses: SonarSource/sonarqube-quality-gate-action@v1.2.0
       #   with:
@@ -53,89 +69,192 @@ jobs:
       #   env:
       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+
+      # =====================================================
+      # 5. Prepare EC2
+      # =====================================================
+
       - name: Prepare EC2
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script: |
+
             set -e
+
+            echo "Installing required packages..."
+
             sudo yum install -y git maven java-17-amazon-corretto
+
+            echo "EC2 preparation completed."
+
+
+      # =====================================================
+      # 6. Clone / Pull Repository
+      # =====================================================
 
       - name: Clone / Pull Repository
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script: |
+
             set -e
+
             APP_DIR=/home/ec2-user/app
             REPO_NAME=Java-springboot-project
             REPO_URL=https://github.com/CloudTechDevOps/Java-springboot-project.git
 
+            echo "Creating application directory..."
+
             mkdir -p $APP_DIR
+
             cd $APP_DIR
 
+            echo "Checking repository..."
+
             if [ -d "$REPO_NAME/.git" ]; then
+
+              echo "Repository already exists."
+
               cd $REPO_NAME
+
+              echo "Resetting local changes..."
+
               git reset --hard
+
+              echo "Pulling latest code from main..."
+
               git pull origin main
+
             else
+
+              echo "Repository does not exist."
+
+              echo "Cloning repository..."
+
               git clone $REPO_URL
+
               cd $REPO_NAME
+
             fi
+
+            echo "Repository updated successfully."
+
+
+      # =====================================================
+      # 7. Build Maven Application on EC2
+      # =====================================================
 
       - name: Build Maven Application
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script: |
+
+            set -e
+
             cd /home/ec2-user/app/Java-springboot-project/backend
+
+            echo "Starting Maven build..."
+
             mvn clean package -DskipTests -U
+
+            echo "Maven build completed."
+
+            echo "Checking generated JAR..."
+
+            ls -lh target/datastore-0.0.7.jar
+
+
+      # =====================================================
+      # 8. Stop Old Application
+      # =====================================================
 
       - name: Stop Old Application
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script_stop: false
+
           script: |
+
             PID=$(ps -ef | grep '[d]atastore-0.0.7.jar' | awk '{print $2}')
 
             if [ -z "$PID" ]; then
+
               echo "Application is not running."
+
               exit 0
+
             fi
 
+            echo "Application is running."
+
             echo "Stopping PID: $PID"
+
             kill -15 $PID
+
+            echo "Waiting for application to stop..."
+
             sleep 5
 
             if ps -p $PID > /dev/null 2>&1; then
+
+              echo "Application is still running."
+
               echo "Force killing PID: $PID"
+
               kill -9 $PID
+
             fi
 
-            echo "Application stopped."
+            echo "Application stopped successfully."
+
+
+      # =====================================================
+      # 9. Start New Application
+      # =====================================================
 
       - name: Start Application
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script: |
+
+            set -e
+
             LOG_DIR=/var/log/app
 
+            echo "Creating log directory..."
+
             sudo mkdir -p $LOG_DIR
+
             sudo chown ec2-user:ec2-user $LOG_DIR
 
             cd /home/ec2-user/app/Java-springboot-project/backend/target
+
+            echo "Starting Spring Boot application..."
 
             nohup env \
               MYSQL_HOST=${{ secrets.DB_HOST }} \
@@ -143,48 +262,91 @@ jobs:
               MYSQL_USERNAME=${{ secrets.DB_USERNAME }} \
               MYSQL_PASSWORD=${{ secrets.DB_PASSWORD }} \
               LOG_FILE_PATH=$LOG_DIR/datastore.log \
-              java -jar datastore-0.0.7.jar --server.port=8084 \
+              java -jar datastore-0.0.7.jar \
+              --server.port=8084 \
               > $LOG_DIR/nohup.out 2>&1 &
+
+            echo "Application start command executed."
+
+
+      # =====================================================
+      # 10. Wait for Application Startup
+      # =====================================================
 
       - name: Wait for App Startup
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
-          script: sleep 15
+
+          script: |
+
+            echo "Waiting for application startup..."
+
+            sleep 15
+
+            echo "Startup wait completed."
+
+
+      # =====================================================
+      # 11. Verify Application
+      # =====================================================
 
       - name: Verify Application
         uses: appleboy/ssh-action@v1.1.0
+
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+
           script: |
+
+            echo "Checking application health..."
+
             HEALTH=$(curl -s http://localhost:8084/actuator/health)
 
+            echo "Health response:"
             echo "$HEALTH"
 
-            [[ "$HEALTH" == *'"status":"UP"'* ]]
+            if [[ "$HEALTH" == *'"status":"UP"'* ]]; then
 
-      - name: Send Deployment Report
-        if: always()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.EMAIL_USERNAME }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: Backend Deployment Report - ${{ github.repository }}
-          to: ${{ secrets.EMAIL_TO }}
-          from: ${{ secrets.EMAIL_USERNAME }}
-          body: |
-            Repository: ${{ github.repository }}
-            Branch: ${{ github.ref_name }}
-            Commit: ${{ github.sha }}
-            Status: ${{ job.status }}
-            Actor: ${{ github.actor }}
-            Workflow: ${{ github.workflow }}
-            SonarQube: Skipped
-            Quality Gate: Skipped
+              echo "Application is UP."
+              echo "Deployment successful."
+
+            else
+
+              echo "Application health check failed."
+
+              exit 1
+
+            fi
+
+
+      # =====================================================
+      # 12. Deployment Email Alert - COMMENTED OUT
+      # =====================================================
+
+      # - name: Send Deployment Report
+      #   if: always()
+      #   uses: dawidd6/action-send-mail@v3
+      #   with:
+      #     server_address: smtp.gmail.com
+      #     server_port: 465
+      #     secure: true
+      #     username: ${{ secrets.EMAIL_USERNAME }}
+      #     password: ${{ secrets.EMAIL_PASSWORD }}
+      #     subject: Backend Deployment Report - ${{ github.repository }}
+      #     to: ${{ secrets.EMAIL_TO }}
+      #     from: ${{ secrets.EMAIL_USERNAME }}
+      #     body: |
+      #       Repository: ${{ github.repository }}
+      #       Branch: ${{ github.ref_name }}
+      #       Commit: ${{ github.sha }}
+      #       Status: ${{ job.status }}
+      #       Actor: ${{ github.actor }}
+      #       Workflow: ${{ github.workflow }}
+      #       SonarQube: Skipped
+      #       Quality Gate: Skipped
